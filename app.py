@@ -1,3 +1,4 @@
+#  Dashboard specific packages
 import base64
 import datetime
 import io
@@ -10,19 +11,48 @@ from dash import html
 import plotly.express as px
 import plotly.graph_objects as go
 # import dash_table
+
+# Analyses/ utils packages
 import pandas as pd
 import numpy as np
 import seaborn as sns
 from jmspack.frequentist_statistics import potential_for_change_index
 from jmspack.utils import JmsColors, flatten
+from catboost import CatBoostRegressor, Pool
+
+def naive_catboost_shap(df: pd.DataFrame,
+                                 grouping_var: str,
+                                 column_list: list,
+                                 ):
+    y = df[grouping_var]
+    X = df[column_list]
+
+    model = CatBoostRegressor(iterations=500,
+                               depth=None,
+                               learning_rate=1,
+                               loss_function='RMSE',
+                               verbose=False)
+
+    # train the model
+    _ = model.fit(X, y, cat_features=column_list)
+
+    shap_values = model.get_feature_importance(Pool(X, label=y,cat_features=X.columns.tolist()), type="ShapValues")
+
+    shap_values = shap_values[:,:-1]
+    
+    tmp_actual = (X
+     .melt(value_name='actual_value')
+    )
+
+    tmp_shap = (pd.DataFrame(shap_values, columns=column_list)
+     .melt(value_name='shap_value')
+    )
+
+    shap_actual_df = pd.concat([tmp_actual, tmp_shap[["shap_value"]]], axis=1)
+
+    return shap_actual_df
 
 app = dash.Dash()
-
-# app = dash.Dash(
-#     __name__,
-#     assets_external_path='https://raw.githubusercontent.com/jameshtwose/services.jms.rocks/main/static_cv/static_style.css'
-# )
-# app.scripts.config.serve_locally = True
 
 server = app.server
 
@@ -48,7 +78,7 @@ dcc.Upload(
         # Allow multiple files to be uploaded
         multiple=True
 ),
-
+dcc.Input(id="target", type="text", placeholder="Please Type In Target Variable", style={'marginRight':'10px'}),
 html.Div(id='output-data-upload'),
 ])
 
@@ -98,18 +128,9 @@ def parse_contents(contents, filename, date):
                                             pci_heatmap = False,)
     all_group_pci_df = all_group_pci_df.rename(columns={"PCI": "PCI_All"})
     
-    cmap = sns.diverging_palette(5, 250, as_cmap=True)
-    # pci_df_html = (all_group_pci_df
-    #     .reindex(all_group_pci_df["PCI_All"].abs().sort_values(ascending=False).index)
-    # #  .sort_values(by="PCI_All", ascending=False)
-    # #  .round(3)
-    # .style.background_gradient(cmap, 
-    #                             subset=['PCI_All'], 
-    #                             axis=1, 
-    #                             vmin=-0.15, 
-    #                             vmax=0.25)
-    # .to_html()
-    # )
+    # cmap = sns.diverging_palette(5, 250, as_cmap=True)
+    
+    # Sort values on absolute PCI
     
     pci_df=(all_group_pci_df
         .reindex(all_group_pci_df["PCI_All"].abs().sort_values(ascending=False).index)
@@ -135,17 +156,57 @@ def parse_contents(contents, filename, date):
                        ],
                fill_color=JmsColors.YELLOW,
                align='center'))
-])
+                ])
+    
+    display_length = 5
+    shap_df = naive_catboost_shap(df = df,
+                    grouping_var = target,
+                    column_list = features_list,
+                    plot_title="All",
+                   max_display=display_length)
+    var_order = shap_df.groupby("variable").var().sort_values(by = "shap_value", ascending = False).index.tolist()
+    shap_fig = px.strip(data_frame=shap_df.assign(**{"actual_value": lambda d: d["actual_value"].astype(float)}), 
+                    x="shap_value", 
+                    y="variable",
+                    color="actual_value",
+                  category_orders={"variable":var_order,
+                                   "actual_value": shap_df["actual_value"].sort_values().unique().tolist()},
+                  color_discrete_sequence=px.colors.sequential.Plasma_r,
+                  height=800
+                    )
 
+    dets_df = pd.DataFrame({"Potential_For_Change_Index": pci_df["variable name"].head(display_length).tolist(), 
+                            "CatBoost_Shap": var_order[0:display_length]})
+    dets_fig = go.Figure(data=[go.Table(
+        columnwidth = [400, 400],
+    header=dict(values=list(dets_df.columns),
+                fill_color=JmsColors.PURPLE,
+                align='center',
+                font=dict(color='white', size=12)),
+    cells=dict(values=[dets_df["Potential_For_Change_Index"],
+                        dets_df["CatBoost_Shap"], 
+                       ],
+               fill_color=JmsColors.YELLOW,
+               align='center'))
+                ])
     
     return html.Div([
+                    html.H1("Top Determinants"),
+                    dcc.Graph(figure=dets_fig),
+                    html.H1("Distribution of Target"),
                     dcc.Graph(figure=target_fig),
+                    html.H1("Regression Plot Between Target and Example Feature"),
                     dcc.Graph(figure=lm_fig),
+                    html.H1("Potential For Change Index"),
                     dcc.Graph(figure=pci_fig),
+                    html.H1("Catboost Shapley Values"),
+                    dcc.Graph(figure=shap_fig),
                     ])
 
 @app.callback(Output('output-data-upload', 'children'),
-              [Input('upload-data', 'contents')],
+              [Input('upload-data', 'contents'),
+            #    Input('target', 'value')
+               ],
               [State('upload-data', 'filename'),
                State('upload-data', 'last_modified')])
 def update_output(list_of_contents, list_of_names, list_of_dates):
