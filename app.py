@@ -1,3 +1,4 @@
+import numpy as np
 import pandas as pd
 import plotly.express as px
 import matplotlib.colors as mcolors
@@ -44,7 +45,7 @@ hide_streamlit_style = """
                         }
                         </style>
                         """
-st.markdown(hide_streamlit_style, unsafe_allow_html=True)
+# st.markdown(hide_streamlit_style, unsafe_allow_html=True)
 
 
 # CREATE CACHE DATA FUNCTION
@@ -204,9 +205,34 @@ if chosen_file is not None:
 
         st.plotly_chart(corr_heat)
         st.markdown("---")
+        
+        # SHOW CIBER
+        st.header("CIBER Calculation")
+        CIBER_fig = px.strip(
+            df[feature_list].select_dtypes("number")
+            .melt()
+            .assign(**{"value": lambda x: x["value"].add(np.random.rand(x["value"].shape[0])*0.75)}),
+            x="value",
+            y="variable",
+            # height=1000,
+            stripmode="group",
+            color_discrete_sequence=["rgba(184, 184, 184, 0.25)"],
+        )
+        st.plotly_chart(CIBER_fig)
 
         # SHOW MAIN ANALYSIS OUTPUT
-        st.header("Model Creation and Feature Importance Calculation")
+        st.header("CatBoost and SHAP (variance) Calculation")
+
+        # SHOW OUTCOME DISTRIBUTION
+        outcome_fig = px.box(
+            df[[outcome]].melt(),
+            x="value",
+            y="variable",
+            points="all",
+            title=f"Outcome Distribution - {outcome}",
+            color_discrete_sequence=["#E8C003"],
+        )
+        st.plotly_chart(outcome_fig)
 
         # SHAP PLOT
         st.markdown(
