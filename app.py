@@ -1,220 +1,238 @@
-#  Dashboard specific packages
-import base64
-import datetime
-import io
-import dash
-from dash.dependencies import Input, Output, State
-# import dash_core_components as dcc
-from dash import dcc
-from dash import html
-# import dash_html_components as html
-import plotly.express as px
-import plotly.graph_objects as go
-# import dash_table
-
-# Analyses/ utils packages
 import pandas as pd
-import numpy as np
-import seaborn as sns
-from jmspack.frequentist_statistics import potential_for_change_index
-from jmspack.utils import JmsColors, flatten
-from catboost import CatBoostRegressor, Pool
+import plotly.express as px
+import matplotlib.colors as mcolors
+import streamlit as st
+from utils import run_catboost_var
 
-def naive_catboost_shap(df: pd.DataFrame,
-                                 grouping_var: str,
-                                 column_list: list,
-                                 ):
-    y = df[grouping_var]
-    X = df[column_list]
+# CONFIG
+st.set_page_config(
+    page_title="Citizen Shield Multi Method Dashboard",
+    page_icon=":sparkles:",
+    layout="wide",
+)
 
-    model = CatBoostRegressor(iterations=500,
-                               depth=None,
-                               learning_rate=1,
-                               loss_function='RMSE',
-                               verbose=False)
+# HIDE STREAMLIT STYLE
+hide_streamlit_style = """
+                        <style>
+                        #MainMenu {visibility: hidden;}
+                        footer {visibility: hidden;}
+                        header {visibility: hidden;}
+                        .st-dn {background-color: #743de0;}
+                        .st-ep {
+                            background-color: #743de0;
+                        }
+                        .css-w770g5:hover {
+                            border-top-color: #743de0;
+                            border-right-color: #743de0;
+                            border-bottom-color: #743de0;
+                            border-left-color: #743de0;
+                            color: #743de0;
+                        }
+                        .css-w770g5:active {
+                            color: #743de0;
+                            border-top-color: #743de0;
+                            border-right-color: #743de0;
+                            border-bottom-color: #743de0;
+                            border-left-color: #743de0;
+                            background-color: #743de0;
+                        }
+                        .css-10y5sf6 {
+                            color: white;
+                        }
+                        .css-1vzeuhh {
+                            background-color: white;
+                        }
+                        </style>
+                        """
+st.markdown(hide_streamlit_style, unsafe_allow_html=True)
 
-    # train the model
-    _ = model.fit(X, y, cat_features=column_list)
 
-    shap_values = model.get_feature_importance(Pool(X, label=y,cat_features=X.columns.tolist()), type="ShapValues")
+# CREATE CACHE DATA FUNCTION
+@st.cache_data(ttl=3600)
+def get_data(file_name="data.csv"):
+    df = pd.read_csv(file_name, index_col=[0]).reset_index(drop=True)
+    return df
 
-    shap_values = shap_values[:,:-1]
-    
-    tmp_actual = (X
-     .melt(value_name='actual_value')
+
+# CREATE ANALYSIS CACHE FUNCTION
+@st.cache_data(ttl=3600)
+def get_analysis_output(df, outcome, feature_list, amount_splits, amount_repeats):
+    shap_df = run_catboost_var(
+        data=df,
+        outcome=outcome,
+        feature_list=feature_list,
+        amount_splits=amount_splits,
+        amount_repeats=amount_repeats,
+    )
+    return shap_df
+
+
+# SIDEBAR - TITLE AND LOGO
+st.sidebar.markdown(
+    """
+    <div style="text-align: center; padding-right: 10px;">
+        <img alt="logo" src="https://citizenshieldproject.files.wordpress.com/2021/01/citizenshield-logo-colour.png?w=580&h=360" width="200">
+    </div>
+    """,
+    unsafe_allow_html=True,
+)
+st.sidebar.markdown(
+    """
+    <div style="text-align: center; color: #E8C003; margin-top: 40px; margin-bottom: 40px;">
+        <a href="https://citizenshield.fi" style="color: #E8C003;">Part of Citizen Shield</a>
+    </div>
+    """,
+    unsafe_allow_html=True,
+)
+
+# SIDEBAR - TITLE AND DATA SOURCE
+# SIDEBAR - OUTCOME AND FEATURE LIST
+chosen_file = st.sidebar.file_uploader("Upload your own data", type="csv")
+
+if chosen_file is not None:
+    # READ DATA
+    df = get_data(file_name=chosen_file)
+
+    outcome = st.sidebar.selectbox(
+        "Select an outcome measure of interest:", options=df.columns.tolist()
     )
 
-    tmp_shap = (pd.DataFrame(shap_values, columns=column_list)
-     .melt(value_name='shap_value')
+    amount_splits = st.sidebar.slider(
+        "Select the amount of splits for the cross validation:",
+        min_value=2,
+        max_value=10,
+        value=2,
     )
 
-    shap_actual_df = pd.concat([tmp_actual, tmp_shap[["shap_value"]]], axis=1)
+    amount_repeats = st.sidebar.slider(
+        "Select the amount of repeats for the cross validation:",
+        min_value=2,
+        max_value=10,
+        value=2,
+    )
 
-    return shap_actual_df
+    if df[outcome].dtype == "object":
+        st.warning("Please select a numeric outcome measure.")
 
-app = dash.Dash()
-
-server = app.server
-
-app.layout = html.Div([
-    html.H1("Multi-Method Dashboard"),
-    html.H4("Please upload your dataset"),
-dcc.Upload(
-        id='upload-data',
-        children=html.Div([
-        'Drag and Drop or ',
-        html.A('Select Files')
-        ]),
-        style={
-        'width': '100%',
-        'height': '60px',
-        'lineHeight': '60px',
-        'borderWidth': '1px',
-        'borderStyle': 'dashed',
-        'borderRadius': '5px',
-        'textAlign': 'center',
-        'margin': '10px'
-         },
-        # Allow multiple files to be uploaded
-        multiple=True
-),
-dcc.Input(id="target", type="text", placeholder="Please Type In Target Variable", style={'marginRight':'10px'}),
-html.Div(id='output-data-upload'),
-])
-
-def parse_contents(contents, filename, date):
-    content_type, content_string = contents.split(',')
-
-    decoded = base64.b64decode(content_string)
-    try:
-        if 'csv' in filename:
-        # Assume that the user uploaded a CSV file
-            df = pd.read_csv(
-                io.StringIO(decoded.decode('utf-8')),
-                sep=","
-                )
-        elif 'xls' in filename:
-        # Assume that the user uploaded an excel file
-            df = pd.read_excel(io.BytesIO(decoded))
-    except Exception as e:
-        print(e)
-        return html.Div([
-            'There was an error processing this file.'
-        ])
-    
-    target = "intention_behavior_composite"
-    
-    df[target] = (df[target] - 10) * -1
-    features_list = df.filter(regex="^automaticity|attitude|^norms|^risk|^effective").columns.tolist()
-    df = (df[["demographic_age", "demographic_higher_education"] + features_list + [target]])
-    
-    target_fig = px.box(df[[target]].melt(), x="variable", y="value", points="all")
-    
-    lm_fig = px.scatter(
-        data_frame=df, x=target, y=features_list[0], opacity=0.65,
-        color="demographic_age",
-        trendline='ols', 
-        # trendline_color_override='darkblue'
+    else:
+        feature_list = st.sidebar.multiselect(
+            "Select features to include in the analysis:",
+            options=df.drop(columns=[outcome]).columns.tolist(),
+            default=df.drop(columns=[outcome]).columns.tolist(),
         )
-    
-    all_group_pci_df = potential_for_change_index(data=df.drop(["demographic_age", "demographic_higher_education"], axis=1),
-                                           features_list=features_list,
-                                            target=target,
-                                            minimum_measure = 'min',
-                                            centrality_measure = 'mean',
-                                            maximum_measure = 'max',
-                                            weight_measure = 'r-value',
-                                            scale_data = True,
-                                            pci_heatmap = False,)
-    all_group_pci_df = all_group_pci_df.rename(columns={"PCI": "PCI_All"})
-    
-    # cmap = sns.diverging_palette(5, 250, as_cmap=True)
-    
-    # Sort values on absolute PCI
-    
-    pci_df=(all_group_pci_df
-        .reindex(all_group_pci_df["PCI_All"].abs().sort_values(ascending=False).index)
-     .sort_values(by="PCI_All", ascending=False)
-     .round(3)
-     .reset_index()
-     .rename(columns={"index": "variable name"})
-     )
-    
-    pci_fig = go.Figure(data=[go.Table(
-        columnwidth = [400] + list(np.repeat(50, repeats=pci_df.shape[1]-1)),
-    header=dict(values=list(pci_df.columns),
-                fill_color=JmsColors.PURPLE,
-                align='center',
-                font=dict(color='white', size=12)),
-    cells=dict(values=[pci_df["variable name"],
-                        pci_df["PCI_All"], 
-                       pci_df["min"], 
-                       pci_df["mean"],
-                       pci_df["max"],
-                       pci_df["r-value"],
-                       pci_df["p-value"],
-                       ],
-               fill_color=JmsColors.YELLOW,
-               align='center'))
-                ])
-    
-    display_length = 5
-    shap_df = naive_catboost_shap(df = df,
-                    grouping_var = target,
-                    column_list = features_list,
-                    plot_title="All",
-                   max_display=display_length)
-    var_order = shap_df.groupby("variable").var().sort_values(by = "shap_value", ascending = False).index.tolist()
-    shap_fig = px.strip(data_frame=shap_df.assign(**{"actual_value": lambda d: d["actual_value"].astype(float)}), 
-                    x="shap_value", 
-                    y="variable",
-                    color="actual_value",
-                  category_orders={"variable":var_order,
-                                   "actual_value": shap_df["actual_value"].sort_values().unique().tolist()},
-                  color_discrete_sequence=px.colors.sequential.Plasma_r,
-                  height=800
-                    )
 
-    dets_df = pd.DataFrame({"Potential_For_Change_Index": pci_df["variable name"].head(display_length).tolist(), 
-                            "CatBoost_Shap": var_order[0:display_length]})
-    dets_fig = go.Figure(data=[go.Table(
-        columnwidth = [400, 400],
-    header=dict(values=list(dets_df.columns),
-                fill_color=JmsColors.PURPLE,
-                align='center',
-                font=dict(color='white', size=12)),
-    cells=dict(values=[dets_df["Potential_For_Change_Index"],
-                        dets_df["CatBoost_Shap"], 
-                       ],
-               fill_color=JmsColors.YELLOW,
-               align='center'))
-                ])
-    
-    return html.Div([
-                    html.H1("Top Determinants"),
-                    dcc.Graph(figure=dets_fig),
-                    html.H1("Distribution of Target"),
-                    dcc.Graph(figure=target_fig),
-                    html.H1("Regression Plot Between Target and Example Feature"),
-                    dcc.Graph(figure=lm_fig),
-                    html.H1("Potential For Change Index"),
-                    dcc.Graph(figure=pci_fig),
-                    html.H1("Catboost Shapley Values"),
-                    dcc.Graph(figure=shap_fig),
-                    ])
+        # SIDEBAR - LOGO AND CREDITS
+        st.sidebar.markdown("---")
+        # st.sidebar.markdown("<br><br><br>", unsafe_allow_html=True)
+        st.sidebar.markdown(
+            """
+            <div style="text-align: center; padding-right: 10px;">
+                <img alt="logo" src="https://services.jms.rocks/img/logo.png" width="100">
+            </div>
+            """,
+            unsafe_allow_html=True,
+        )
+        st.sidebar.markdown(
+            """
+            <div style="text-align: center; color: #E8C003; margin-top: 40px; margin-bottom: 40px;">
+                <a href="https://services.jms.rocks" style="color: #E8C003;">Created by James Twose</a>
+            </div>
+            """,
+            unsafe_allow_html=True,
+        )
 
-@app.callback(Output('output-data-upload', 'children'),
-              [Input('upload-data', 'contents'),
-            #    Input('target', 'value')
-               ],
-              [State('upload-data', 'filename'),
-               State('upload-data', 'last_modified')])
-def update_output(list_of_contents, list_of_names, list_of_dates):
-    if list_of_contents is not None:
-        children = [
-            parse_contents(c, n, d) for c, n, d in
-            zip(list_of_contents, list_of_names, list_of_dates)]
-        return children
+        # RUN MAIN ANALYSIS
+        shap_df = get_analysis_output(
+            df=df,
+            outcome=outcome,
+            feature_list=feature_list,
+            amount_splits=amount_splits,
+            amount_repeats=amount_repeats,
+        )
 
-if __name__ == '__main__':
-    app.run_server(debug=True)
+        # GET BEST FEATURE
+        shap_feature_importance_sorted = (
+            shap_df.drop(columns=["fold_number"])
+            .median()
+            .sort_values(ascending=True)
+            .index.tolist()
+        )
+        shap_best_feature = shap_feature_importance_sorted[-1]
+
+        # MAINPAGE
+        st.markdown(
+            "<h1>Citizen Shield Multi Method Dashboard</h1>", unsafe_allow_html=True
+        )
+        left_column, middle_column, right_column = st.columns(3)
+        with left_column:
+            st.subheader("Chosen Outcome")
+            st.subheader(outcome)
+        with middle_column:
+            st.subheader("Mean of chosen outcome")
+            st.subheader(f"{df[outcome].mean():,.3f}")
+        with right_column:
+            st.subheader("Variance of chosen outcome")
+            st.subheader(f"{df[outcome].var():,.3f}")
+        st.markdown("---")
+
+        st.header("Main Report")
+        st.markdown(
+            f"""Based on the variance in SHAP values, the following feature
+            is the most important: :green[{shap_best_feature}]"""
+        )
+        st.markdown("---")
+
+        st.header("Selected Dataframe")
+        st.dataframe(df)
+        st.markdown("---")
+        st.header("Descriptive Statistics")
+        st.dataframe(df.describe())
+        st.markdown("---")
+
+        st.header("Pearson Correlations between all columns")
+        plot_df = df.select_dtypes("number").corr().round(3)
+        # correlation plot
+        mycmap = mcolors.LinearSegmentedColormap.from_list(
+            "mycmap", ["#E8C003", "white", "#743de0"], N=256
+        )
+        color_list = [mcolors.rgb2hex(mycmap(i)) for i in range(mycmap.N)]
+        corr_heat = px.imshow(
+            plot_df,
+            text_auto=True,
+            color_continuous_scale=color_list,
+        )
+
+        st.plotly_chart(corr_heat)
+        st.markdown("---")
+
+        # SHOW MAIN ANALYSIS OUTPUT
+        st.header("Model Creation and Feature Importance Calculation")
+
+        # SHAP PLOT
+        st.markdown(
+            """
+            <div>
+                <p>For more information on SHAP Values, please see the following: 
+                    <a href="https://christophm.github.io/interpretable-ml-book/shap.html"
+                    style="color: #E8C003;">SHAP Values Explanation</a>
+                </p>
+            </div>
+            """,
+            unsafe_allow_html=True,
+        )
+
+        shap_fig = px.box(
+            shap_df[shap_feature_importance_sorted].melt(),
+            x="value",
+            y="variable",
+            points="all",
+            color_discrete_sequence=["#E8C003"],
+            title="Feature Importance Based on Variance in SHAP Values",
+            height=800,
+        )
+
+        shap_fig.update_layout(showlegend=False, coloraxis_showscale=True)
+        st.plotly_chart(shap_fig)
+
+else:
+    st.warning("Please upload a CSV file.")

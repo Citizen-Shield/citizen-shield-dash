@@ -1,7 +1,4 @@
-dash>=2.0.0
-dash-core-components>=2.0.0
-dash-html-components>=2.0.0
-dash-renderer>=1.1.2
-dash-table>=4.41
-pandas>=1.3.3
-plotly>=5.3.1
+streamlit>=1.22.0
+catboost>=1.2
+jmspack>=0.0.1
+shap>=0.41.0

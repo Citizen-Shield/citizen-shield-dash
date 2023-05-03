@@ -16,3 +16,5 @@ df.head()
 fig = px.box(df[[target]].melt(), x="variable", y="value", points="all")
 fig.show()
 # %%
+# df.to_csv(("data/shield_features_outcome.csv"))
+# %%
